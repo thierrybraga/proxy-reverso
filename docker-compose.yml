@@ -1,0 +1,192 @@
+###############################################################################
+# proxy-reverso — NGINX reverse proxy para lab pessoal (Windows 11 + WSL2)
+#
+# Serviços:
+#   nginx        -> reverse proxy principal (sempre ativo)
+#   acme         -> emissão/renovação Let's Encrypt (profile: certs)
+#   cloudflared  -> Cloudflare Tunnel (profile: cloudflare)
+#   ngrok        -> túnel ngrok (profile: ngrok)
+#   cadvisor     -> monitor de CPU/memória dos containers (profile: monitoring)
+#
+# Uso:
+#   docker compose up -d                      # sobe só o nginx
+#   docker compose --profile cloudflare up -d # nginx + cloudflared
+#   docker compose --profile ngrok up -d      # nginx + ngrok
+#   docker compose --profile monitoring up -d # nginx + cadvisor
+#
+# Limites de CPU/memória são lidos do .env (ver .env.example).
+###############################################################################
+
+name: proxy-reverso
+
+services:
+  # ─────────────────────────────────────────────────────────────────────────
+  # NGINX — reverse proxy principal
+  # ─────────────────────────────────────────────────────────────────────────
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    image: proxy-reverso/nginx:latest
+    container_name: ${NGINX_CONTAINER_NAME:-lab-nginx}
+    restart: unless-stopped
+
+    # Fuso horário / data e hora -------------------------------------------
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+
+    # Portas expostas no host (WSL) ----------------------------------------
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+
+    # Volumes: configs e certificados são montados para edição "ao vivo" ---
+    volumes:
+      - ./nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./data/acme-webroot:/var/www/acme:ro   # /.well-known/acme-challenge (HTTP-01)
+      - ./logs/nginx:/var/log/nginx
+      - /etc/localtime:/etc/localtime:ro        # herda hora do host WSL (read-only)
+
+    # Permite proxy para apps rodando no host/WSL (host.docker.internal) ----
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - labnet
+
+    # ── Limites de recurso (CPU / memória) ────────────────────────────────
+    # Chaves de nível superior são aplicadas diretamente por `docker compose up`.
+    cpus: ${NGINX_CPUS:-1.0}            # nº de núcleos (ex.: 0.5, 1.0, 2.0)
+    mem_limit: ${NGINX_MEM_LIMIT:-256m} # teto rígido de memória
+    mem_reservation: ${NGINX_MEM_RESERVATION:-128m}
+    pids_limit: 200
+    # Equivalente "deploy" (usado com `docker compose --compatibility up` ou Swarm)
+    deploy:
+      resources:
+        limits:
+          cpus: "${NGINX_CPUS:-1.0}"
+          memory: ${NGINX_MEM_LIMIT:-256m}
+        reservations:
+          memory: ${NGINX_MEM_RESERVATION:-128m}
+
+    # ── Segurança do container ────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE   # necessário para escutar nas portas 80/443
+
+    # ── Healthcheck ───────────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # ── Rotação de logs do Docker ─────────────────────────────────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # acme.sh — emissão e renovação de certificados Let's Encrypt
+  #   Padrão: DNS-01 via GoDaddy (funciona atrás de NAT, suporta wildcard).
+  #   Roda como daemon que renova sozinho; também usado on-demand p/ emitir.
+  # ─────────────────────────────────────────────────────────────────────────
+  acme:
+    image: neilpang/acme.sh:latest
+    container_name: ${ACME_CONTAINER_NAME:-lab-acme}
+    restart: unless-stopped
+    profiles: ["certs"]
+    command: daemon          # mantém vivo e roda o cron de renovação interno
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      # Credenciais da API GoDaddy (DNS-01). Obtenha em developer.godaddy.com
+      GD_Key: ${GD_KEY:-}
+      GD_Secret: ${GD_SECRET:-}
+    volumes:
+      - ./data/acme:/acme.sh                 # estado/contas do acme.sh
+      - ./certs:/certs                       # destino dos certificados instalados
+      - ./data/acme-webroot:/var/www/acme    # usado só no modo HTTP-01
+    networks:
+      - labnet
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Cloudflare Tunnel — acesso externo sem abrir portas no roteador
+  # ─────────────────────────────────────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ${CLOUDFLARED_CONTAINER_NAME:-lab-cloudflared}
+    restart: unless-stopped
+    profiles: ["cloudflare"]
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    # Modo token (recomendado): roda o túnel criado no painel Zero Trust.
+    command: tunnel --no-autoupdate run
+    # Alternativa por arquivo de config (comente o "command" acima e use):
+    #   command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    #   volumes:
+    #     - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - nginx
+    networks:
+      - labnet
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ngrok — túnel rápido para demos / acesso externo temporário
+  # ─────────────────────────────────────────────────────────────────────────
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ${NGROK_CONTAINER_NAME:-lab-ngrok}
+    restart: unless-stopped
+    profiles: ["ngrok"]
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    # Encaminha o ngrok para o nginx interno (porta 443 do container nginx).
+    command: ["http", "https://nginx:443", "--log", "stdout"]
+    # Para usar domínio/edge fixo e regras avançadas, use o arquivo de config:
+    #   command: ["start", "--all", "--config", "/etc/ngrok.yml"]
+    #   volumes:
+    #     - ./ngrok/ngrok.yml:/etc/ngrok.yml:ro
+    depends_on:
+      - nginx
+    networks:
+      - labnet
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # cAdvisor — dashboard de CPU/memória/rede por container (http://localhost:8080)
+  # ─────────────────────────────────────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: ${CADVISOR_CONTAINER_NAME:-lab-cadvisor}
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    privileged: true
+    ports:
+      - "${CADVISOR_PORT:-8080}:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - labnet
+
+networks:
+  labnet:
+    name: ${LAB_NETWORK:-labnet}
+    driver: bridge

@@ -1,0 +1,41 @@
+###############################################################################
+# config.yml.example — Cloudflare Tunnel (modo arquivo de credenciais)
+#
+# Há DUAS formas de rodar o cloudflared:
+#
+#  A) MODO TOKEN (recomendado, mais simples) — NÃO precisa deste arquivo.
+#     1. Adicione seu domínio à Cloudflare (mude os nameservers na GoDaddy
+#        para os da Cloudflare — é grátis).
+#     2. https://one.dash.cloudflare.com  > Networks > Tunnels > Create tunnel
+#     3. Copie o token e cole em CLOUDFLARE_TUNNEL_TOKEN no .env
+#     4. No painel, em "Public Hostnames", aponte:
+#           app1.meudominio.com.br ->  Service: HTTPS  ->  nginx:443
+#           (marque "No TLS Verify" em Additional settings)
+#     5. docker compose --profile cloudflare up -d
+#
+#  B) MODO CONFIG (este arquivo) — para quem prefere versionar as regras.
+#     1. cloudflared tunnel login   (gera cert.pem)
+#     2. cloudflared tunnel create lab   (gera <ID>.json)
+#     3. Coloque <ID>.json nesta pasta e ajuste abaixo.
+#     4. No docker-compose, descomente o "command" e o "volumes" do cloudflared.
+###############################################################################
+
+tunnel: COLOQUE-AQUI-O-TUNNEL-ID
+credentials-file: /etc/cloudflared/COLOQUE-AQUI-O-TUNNEL-ID.json
+
+# Regras de roteamento: hostname público -> serviço interno (nginx)
+ingress:
+  - hostname: app1.meudominio.com.br
+    service: https://nginx:443
+    originRequest:
+      noTLSVerify: true        # o nginx usa cert interno (LE/self-signed)
+      httpHostHeader: app1.meudominio.com.br
+
+  - hostname: app2.meudominio.com.br
+    service: https://nginx:443
+    originRequest:
+      noTLSVerify: true
+      httpHostHeader: app2.meudominio.com.br
+
+  # Regra final obrigatória (catch-all)
+  - service: http_status:404

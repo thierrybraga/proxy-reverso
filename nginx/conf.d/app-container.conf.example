@@ -1,0 +1,57 @@
+###############################################################################
+# app-container.conf.example — TEMPLATE: proxy para um app em CONTAINER Docker
+#
+# Use quando o app roda em outro container na mesma rede "labnet"
+# (ex.: portainer, grafana, n8n, uma API própria...).
+#
+# COMO USAR:
+#   1. Copie e renomeie:  cp app-container.conf.example portainer.conf
+#   2. Troque "app1" / "meu-container" / portas / domínio
+#   3. Garanta que o container alvo está em "labnet" (networks no compose dele)
+#   4. Tenha o certificado em ./certs/<dominio>/ (Let's Encrypt) ou use o local
+#   5. docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload
+###############################################################################
+
+# "upstream" = destino. O nome do host é o NOME DO SERVIÇO/CONTAINER no Docker.
+upstream app1_backend {
+    server meu-container:3000;     # <- nome do container : porta interna
+    keepalive 32;
+}
+
+# Redireciona HTTP -> HTTPS para este host
+server {
+    listen      80;
+    server_name app1.meudominio.com.br;
+    include /etc/nginx/snippets/acme-challenge.conf;
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    http2       on;
+    server_name app1.meudominio.com.br;
+
+    # Certificado Let's Encrypt (gerado pelos scripts) — ou troque pelo local
+    ssl_certificate     /etc/nginx/certs/meudominio.com.br/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/meudominio.com.br/privkey.pem;
+    include /etc/nginx/snippets/ssl.conf;
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # Rate limit por IP
+    limit_req  zone=req_per_ip burst=20 nodelay;
+    limit_conn conn_per_ip 50;
+
+    # Tamanho máximo de upload para esta app
+    client_max_body_size 100m;
+
+    location / {
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_pass http://app1_backend;
+    }
+
+    # Exemplo: bloquear acesso a paths sensíveis
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+}

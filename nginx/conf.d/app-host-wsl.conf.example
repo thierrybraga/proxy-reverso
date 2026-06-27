@@ -1,0 +1,46 @@
+###############################################################################
+# app-host-wsl.conf.example — TEMPLATE: proxy para app rodando no HOST / WSL
+#
+# Use quando o app NÃO está em container, mas direto na máquina/WSL
+# (ex.: um "npm run dev" na porta 5173, um serviço .NET na 5000, etc.).
+#
+# O acesso ao host é feito por "host.docker.internal", habilitado no compose
+# via extra_hosts: "host.docker.internal:host-gateway".
+#
+# COMO USAR:
+#   1. cp app-host-wsl.conf.example minhaapp.conf
+#   2. Ajuste domínio e a PORTA do serviço no host
+#   3. nginx -t e reload
+###############################################################################
+
+upstream app2_host {
+    server host.docker.internal:5000;   # <- porta do serviço no host/WSL
+    keepalive 16;
+}
+
+server {
+    listen      80;
+    server_name app2.meudominio.com.br;
+    include /etc/nginx/snippets/acme-challenge.conf;
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    http2       on;
+    server_name app2.meudominio.com.br;
+
+    ssl_certificate     /etc/nginx/certs/meudominio.com.br/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/meudominio.com.br/privkey.pem;
+    include /etc/nginx/snippets/ssl.conf;
+    include /etc/nginx/snippets/security-headers.conf;
+
+    limit_req  zone=req_per_ip burst=10 nodelay;
+    limit_conn conn_per_ip 30;
+
+    location / {
+        include /etc/nginx/snippets/proxy.conf;
+        proxy_pass http://app2_host;
+    }
+}

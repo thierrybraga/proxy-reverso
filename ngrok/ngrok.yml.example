@@ -1,0 +1,31 @@
+###############################################################################
+# ngrok.yml.example — config opcional do ngrok (modo avançado)
+#
+# Modo simples (sem este arquivo): basta NGROK_AUTHTOKEN no .env e
+#   docker compose --profile ngrok up -d
+# O compose já encaminha para https://nginx:443.
+#
+# Use este arquivo para múltiplos túneis, domínio fixo, basic-auth, etc.
+# Para ativá-lo, no docker-compose (serviço ngrok) troque o "command" por:
+#   command: ["start", "--all", "--config", "/etc/ngrok.yml"]
+# e descomente o volume:
+#   - ./ngrok/ngrok.yml:/etc/ngrok.yml:ro
+###############################################################################
+
+version: "2"
+authtoken: COLE-SEU-TOKEN-AQUI    # ou deixe e use NGROK_AUTHTOKEN no .env
+
+tunnels:
+  lab-https:
+    proto: http
+    addr: https://nginx:443       # aponta para o nginx interno
+    inspect: false
+    host_header: rewrite
+    # domain: seu-subdominio.ngrok-free.app   # domínio fixo (planos pagos/free reservado)
+    # basic_auth:
+    #   - "usuario:senhaforte"               # proteção extra na borda do ngrok
+
+  # Exemplo de segundo túnel apontando direto para um app no host/WSL:
+  # app-dev:
+  #   proto: http
+  #   addr: host.docker.internal:5173

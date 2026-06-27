@@ -1,0 +1,20 @@
+# Segredos e ambiente
+.env
+
+# Certificados e estado do ACME (NUNCA versionar chaves privadas)
+certs/
+data/
+
+# Logs
+logs/
+
+# Configs sensíveis geradas a partir dos exemplos
+cloudflared/config.yml
+ngrok/ngrok.yml
+
+# SO / editores
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
